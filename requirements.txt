@@ -1,5 +1,5 @@
 streamlit
 pandas
-pybaseball
-matplotlib
 altair
+pybaseball
+MLB-StatsAPI
