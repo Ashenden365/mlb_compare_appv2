@@ -25,7 +25,7 @@ import pandas as pd
 import altair as alt
 from datetime import datetime, date
 
-import statsapi                               # NEW: roster取得
+import statsapi
 from pybaseball import playerid_reverse_lookup, statcast_batter
 
 # ------------------------------------------------------------------
@@ -47,10 +47,6 @@ st.title("MLB Home Run Pace Comparison — 2025 Season (Dynamic Rosters)")
 # ------------------------------------------------------------------
 @st.cache_data(ttl=12 * 60 * 60)  # 12h キャッシュ
 def build_star_players():
-    """
-    Return list of (playerName, mlbamID, teamAbbr) for all 30 teams'
-    current active rosters.
-    """
     teams_raw = statsapi.get('teams', {'sportIds': 1})['teams']
     active_teams = [t for t in teams_raw if t['active']]
 
@@ -68,10 +64,15 @@ def build_star_players():
                 stars.append((name, pid, team['abbreviation']))
     return stars
 
-
 star_players = build_star_players()
 teams        = sorted({t for _, _, t in star_players})
 player_map   = {name: (pid, team) for name, pid, team in star_players}
+
+# デフォルト指定
+DEFAULT_PLAYER1 = "Shohei Ohtani"
+DEFAULT_TEAM1 = "LAD"
+DEFAULT_PLAYER2 = "Aaron Judge"
+DEFAULT_TEAM2 = "NYY"
 
 # ------------------------------------------------------------------
 # Helper functions
@@ -80,12 +81,10 @@ def get_player_image(pid: int) -> str:
     return (f"https://img.mlbstatic.com/mlb-photos/image/upload/"
             f"w_180,q_100/v1/people/{pid}/headshot/67/current.png")
 
-
 def fetch_hr_log(pid: int,
                  start: datetime,
                  end: datetime,
                  team_abbr: str) -> pd.DataFrame:
-    """Fetch Statcast HR data and return cleaned DataFrame."""
     df = statcast_batter(start_dt=start.strftime('%Y-%m-%d'),
                          end_dt=end.strftime('%Y-%m-%d'),
                          player_id=str(pid))
@@ -93,8 +92,6 @@ def fetch_hr_log(pid: int,
         return df
 
     df['Date'] = pd.to_datetime(df['game_date'])
-
-    # Tokyo-Series exception
     tokyo_days = [TOKYO_START, TOKYO_2]
     if team_abbr in {'LAD', 'CHC'}:
         mask = df['Date'].isin(tokyo_days) | (df['Date'] >= REGULAR_START)
@@ -113,14 +110,12 @@ def fetch_hr_log(pid: int,
     df_hr['HR No'] = df_hr.index + 1
     df_hr['MM-DD'] = df_hr['Date'].dt.strftime('%m-%d')
 
-    # pitcher ID -> name
     def pid2name(p):
         try:
             t = playerid_reverse_lookup([p], key_type='mlbam')
             return t['name_first'][0] + ' ' + t['name_last'][0]
         except Exception:
             return str(p)
-
     df_hr['Pitcher'] = df_hr['pitcher'].apply(
         lambda x: pid2name(x) if pd.notna(x) else '')
 
@@ -131,27 +126,30 @@ def fetch_hr_log(pid: int,
 # ------------------------------------------------------------------
 st.sidebar.header("Select Players and Date Range")
 
+today = date.today()
+start_date = st.sidebar.date_input("Start date", TOKYO_START)
+end_date   = st.sidebar.date_input("End date", today)
+
+team1_default_idx = teams.index(DEFAULT_TEAM1) if DEFAULT_TEAM1 in teams else 0
+team2_default_idx = teams.index(DEFAULT_TEAM2) if DEFAULT_TEAM2 in teams else 1
 team1_abbr = st.sidebar.selectbox(
     "First Player's Team", teams,
-    index=teams.index("LAD") if "LAD" in teams else 0)
+    index=team1_default_idx)
 team2_abbr = st.sidebar.selectbox(
     "Second Player's Team", teams,
-    index=teams.index("NYY") if "NYY" in teams else 1)
+    index=team2_default_idx)
 
 team1_players = [n for n, _, t in star_players if t == team1_abbr]
 team2_players = [n for n, _, t in star_players if t == team2_abbr]
 
-player1_name = st.sidebar.selectbox("First Player", team1_players)
-player2_name = st.sidebar.selectbox("Second Player", team2_players)
-
-start_date = st.sidebar.date_input("Start date", REGULAR_START)
-today = date.today()
-end_date   = st.sidebar.date_input("End date", today)
+player1_default_idx = team1_players.index(DEFAULT_PLAYER1) if DEFAULT_PLAYER1 in team1_players else 0
+player2_default_idx = team2_players.index(DEFAULT_PLAYER2) if DEFAULT_PLAYER2 in team2_players else 0
+player1_name = st.sidebar.selectbox("First Player", team1_players, index=player1_default_idx)
+player2_name = st.sidebar.selectbox("Second Player", team2_players, index=player2_default_idx)
 
 p1_id, team1_code = player_map[player1_name]
 p2_id, team2_code = player_map[player2_name]
 
-# Warning if querying before season start
 for name, code in [(player1_name, team1_code),
                    (player2_name, team2_code)]:
     if code not in {'LAD', 'CHC'} \
