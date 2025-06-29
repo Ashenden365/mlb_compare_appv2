@@ -40,7 +40,7 @@ ORANGE     = "#FF8000"
 
 st.set_page_config(layout="wide",
                    page_title="MLB 2025 Home Run Pace Tracker")
-st.title("MLB Home Run Pace Comparison — 2025 Season (Dynamic Rosters)")
+st.title("MLB Home Run Pace Comparison — 2025 Season")
 
 # ------------------------------------------------------------------
 # Build latest roster list (cached)
@@ -164,6 +164,13 @@ col1, col2 = st.columns(2)
 logs = {}
 color_map = {player1_name: ROYAL_BLUE, player2_name: ORANGE}
 
+# ---- 追加：Y軸最大値取得 ----
+# 空でなければ最大値を取得、どちらもデータなければ0
+max_hr = max(
+    logs.get(player1_name, pd.DataFrame()).get('HR No', pd.Series([0])).max() if player1_name in logs and not logs[player1_name].empty else 0,
+    logs.get(player2_name, pd.DataFrame()).get('HR No', pd.Series([0])).max() if player2_name in logs and not logs[player2_name].empty else 0
+)
+
 for col, pid, name, code in [
     (col1, p1_id, player1_name, team1_code),
     (col2, p2_id, player2_name, team2_code)
@@ -171,7 +178,6 @@ for col, pid, name, code in [
     with col:
         st.subheader(name)
         st.image(get_player_image(pid), width=100)
-
         df_hr = fetch_hr_log(
             pid,
             datetime.combine(start_date, datetime.min.time()),
@@ -189,6 +195,7 @@ for col, pid, name, code in [
                    'home_team', 'away_team', 'Pitcher']],
             use_container_width=True)
 
+        # ---- ここでY軸スケールを統一 ----
         chart = (alt.Chart(df_hr)
                  .mark_line(point=False, color=color_map[name])
                  .encode(
@@ -197,7 +204,8 @@ for col, pid, name, code in [
                              axis=alt.Axis(format='%m-%d')),
                      y=alt.Y('HR No:Q',
                              title='Cumulative HRs',
-                             axis=alt.Axis(format='d'))
+                             axis=alt.Axis(format='d'),
+                             scale=alt.Scale(domain=[0, max_hr]))
                  ) +
                  alt.Chart(df_hr)
                  .mark_point(size=60, filled=True,
