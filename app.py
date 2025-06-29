@@ -40,7 +40,7 @@ ORANGE     = "#FF8000"
 
 st.set_page_config(layout="wide",
                    page_title="MLB 2025 Home Run Pace Tracker")
-st.title("MLB Home Run Pace Comparison — 2025 Season")
+st.title("MLB Home Run Pace Comparison — 2025 Season (Dynamic Rosters)")
 
 # ------------------------------------------------------------------
 # Build latest roster list (cached)
@@ -164,20 +164,31 @@ col1, col2 = st.columns(2)
 logs = {}
 color_map = {player1_name: ROYAL_BLUE, player2_name: ORANGE}
 
-for col, pid, name, code in [
-    (col1, p1_id, player1_name, team1_code),
-    (col2, p2_id, player2_name, team2_code)
+# 1. まず両者分データを先に取得してlogsに入れる
+for name, pid, code in [
+    (player1_name, p1_id, team1_code),
+    (player2_name, p2_id, team2_code)
 ]:
+    df_hr = fetch_hr_log(
+        pid,
+        datetime.combine(start_date, datetime.min.time()),
+        end_date,
+        code
+    )
+    logs[name] = df_hr
+
+# 2. Y軸の最大値をこの段階で必ず取得
+hr1_max = logs[player1_name]['HR No'].max() if not logs[player1_name].empty else 0
+hr2_max = logs[player2_name]['HR No'].max() if not logs[player2_name].empty else 0
+max_hr = max(hr1_max, hr2_max, 1)
+
+# 3. グラフ描画
+for col, name in zip([col1, col2], [player1_name, player2_name]):
     with col:
         st.subheader(name)
-        st.image(get_player_image(pid), width=100)
-        df_hr = fetch_hr_log(
-            pid,
-            datetime.combine(start_date, datetime.min.time()),
-            end_date,
-            code
-        )
-        logs[name] = df_hr
+        st.image(get_player_image(player_map[name][0]), width=100)
+
+        df_hr = logs[name]
 
         if df_hr.empty:
             st.info("No HR data in selected period.")
@@ -187,11 +198,6 @@ for col, pid, name, code in [
             df_hr[['HR No', 'MM-DD',
                    'home_team', 'away_team', 'Pitcher']],
             use_container_width=True)
-
-        # ---- ここでY軸最大値を「両者の最大HR数」で都度再計算 ----
-        hr1_max = logs[player1_name]['HR No'].max() if not logs[player1_name].empty else 0
-        hr2_max = logs[player2_name]['HR No'].max() if not logs[player2_name].empty else 0
-        max_hr = max(hr1_max, hr2_max, 1)  # 1以上（全データ0防止）
 
         chart = (alt.Chart(df_hr)
                  .mark_line(point=False, color=color_map[name])
