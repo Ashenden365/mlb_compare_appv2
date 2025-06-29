@@ -129,7 +129,7 @@ player2_name = st.sidebar.selectbox(
     index=team2_players.index(default_player2) if default_player2 in team2_players else 0)
 
 start_date = st.sidebar.date_input("Start date", TOKYO_START)
-end_date   = st.sidebar.date_input("End date", datetime(2025, 6, 27))
+end_date = st.sidebar.date_input("End date", datetime.today())
 
 no_game_msgs = []
 if team1_abbr not in {'LAD', 'CHC'} and datetime.combine(start_date, datetime.min.time()) < REGULAR_START:
