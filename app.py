@@ -124,6 +124,10 @@ def fetch_hr_log(pid: int,
 # ------------------------------------------------------------------
 # Sidebar UI
 # ------------------------------------------------------------------
+st.sidebar.markdown(
+    "⚠️ **Note:** Only players currently on the official MLB active roster are shown in the dropdowns. "
+    "Players not on an active roster (e.g., due to injury or other status) will not appear."
+)
 st.sidebar.header("Select Players and Date Range")
 
 today = date.today()
@@ -164,7 +168,7 @@ col1, col2 = st.columns(2)
 logs = {}
 color_map = {player1_name: ROYAL_BLUE, player2_name: ORANGE}
 
-# 1. まず両者分データを先に取得してlogsに入れる
+# データを先に取得
 for name, pid, code in [
     (player1_name, p1_id, team1_code),
     (player2_name, p2_id, team2_code)
@@ -177,12 +181,7 @@ for name, pid, code in [
     )
     logs[name] = df_hr
 
-# 2. Y軸の最大値をこの段階で必ず取得
-hr1_max = logs[player1_name]['HR No'].max() if not logs[player1_name].empty else 0
-hr2_max = logs[player2_name]['HR No'].max() if not logs[player2_name].empty else 0
-max_hr = max(hr1_max, hr2_max, 1)
-
-# 3. グラフ描画
+# グラフ描画（各選手でy軸スケール自動・制約なし）
 for col, name in zip([col1, col2], [player1_name, player2_name]):
     with col:
         st.subheader(name)
@@ -207,8 +206,7 @@ for col, name in zip([col1, col2], [player1_name, player2_name]):
                              axis=alt.Axis(format='%m-%d')),
                      y=alt.Y('HR No:Q',
                              title='Cumulative HRs',
-                             axis=alt.Axis(format='d'),
-                             scale=alt.Scale(domain=[0, max_hr]))
+                             axis=alt.Axis(format='d'))
                  ) +
                  alt.Chart(df_hr)
                  .mark_point(size=60, filled=True,
