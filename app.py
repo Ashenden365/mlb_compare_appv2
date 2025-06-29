@@ -1,21 +1,35 @@
 # -*- coding: utf-8 -*-
 """
-MLB Home Run Pace Tracker — dynamic roster版 (Streamlit)
-* 最新ロスター（MLB-StatsAPI, 12hキャッシュ）
-* Statcast HRログ＋東京シリーズ例外
-* デフォルト選手: Shohei Ohtani × Aaron Judge
-* デフォルト開始日: 2025-03-18
+MLB Home Run Pace Tracker — dynamic roster version (Streamlit)
+=============================================================
+*   自動で最新ロスターを取得（MLB-StatsAPI）。
+*   Statcast HRログに東京シリーズ例外ロジックを適用。
+*   Streamlit でインタラクティブ比較表示。
+
+起動方法:
+    streamlit run app.py
+
+依存ライブラリ (requirements.txt):
+    streamlit
+    pandas
+    altair
+    pybaseball
+    MLB-StatsAPI
 """
 
+# ------------------------------------------------------------------
+# Imports
+# ------------------------------------------------------------------
 import streamlit as st
 import pandas as pd
 import altair as alt
-from datetime import datetime
-import statsapi                                 # roster取得
+from datetime import datetime, date
+
+import statsapi                               # NEW: roster取得
 from pybaseball import playerid_reverse_lookup, statcast_batter
 
 # ------------------------------------------------------------------
-# 定数
+# Constants
 # ------------------------------------------------------------------
 TOKYO_START   = datetime(2025, 3, 18)
 TOKYO_2       = datetime(2025, 3, 19)
@@ -29,159 +43,208 @@ st.set_page_config(layout="wide",
 st.title("MLB Home Run Pace Comparison — 2025 Season (Dynamic Rosters)")
 
 # ------------------------------------------------------------------
-# 最新ロスター取得（キャッシュ）
+# Build latest roster list (cached)
 # ------------------------------------------------------------------
-@st.cache_data(ttl=12 * 60 * 60)
+@st.cache_data(ttl=12 * 60 * 60)  # 12h キャッシュ
 def build_star_players():
+    """
+    Return list of (playerName, mlbamID, teamAbbr) for all 30 teams'
+    current active rosters.
+    """
+    teams_raw = statsapi.get('teams', {'sportIds': 1})['teams']
+    active_teams = [t for t in teams_raw if t['active']]
+
     stars = []
-    for team in [t for t in statsapi.get('teams', {'sportIds': 1})['teams']
-                 if t['active']]:
-        data = statsapi.get('team_roster',
-                            {'teamId': team['id'], 'rosterType': 'active'})
-        for pl in data.get('roster', []):
-            person = pl.get('person', {})
-            if person.get('fullName') and person.get('id'):
-                stars.append((person['fullName'],
-                              person['id'],
-                              team['abbreviation']))
+    for team in active_teams:
+        data = statsapi.get('team_roster', {
+            'teamId': team['id'],
+            'rosterType': 'active'
+        })
+        for player in data.get('roster', []):
+            person = player.get('person', {})
+            name   = person.get('fullName')
+            pid    = person.get('id')
+            if name and pid:
+                stars.append((name, pid, team['abbreviation']))
     return stars
 
 
 star_players = build_star_players()
 teams        = sorted({t for _, _, t in star_players})
-player_map   = {n: (pid, team) for n, pid, team in star_players}
+player_map   = {name: (pid, team) for name, pid, team in star_players}
 
 # ------------------------------------------------------------------
-# ヘルパー
+# Helper functions
 # ------------------------------------------------------------------
-def player_img(pid: int) -> str:
+def get_player_image(pid: int) -> str:
     return (f"https://img.mlbstatic.com/mlb-photos/image/upload/"
             f"w_180,q_100/v1/people/{pid}/headshot/67/current.png")
 
 
-def fetch_hr(pid: int,
-             start: datetime,
-             end: datetime,
-             team: str) -> pd.DataFrame:
+def fetch_hr_log(pid: int,
+                 start: datetime,
+                 end: datetime,
+                 team_abbr: str) -> pd.DataFrame:
+    """Fetch Statcast HR data and return cleaned DataFrame."""
     df = statcast_batter(start_dt=start.strftime('%Y-%m-%d'),
                          end_dt=end.strftime('%Y-%m-%d'),
                          player_id=str(pid))
     if df.empty:
         return df
+
     df['Date'] = pd.to_datetime(df['game_date'])
 
+    # Tokyo-Series exception
     tokyo_days = [TOKYO_START, TOKYO_2]
-    mask = (df['Date'].isin(tokyo_days) | (df['Date'] >= REGULAR_START)) \
-           if team in {'LAD', 'CHC'} else (df['Date'] >= REGULAR_START)
-    df = df[mask]
+    if team_abbr in {'LAD', 'CHC'}:
+        mask = df['Date'].isin(tokyo_days) | (df['Date'] >= REGULAR_START)
+    else:
+        mask = df['Date'] >= REGULAR_START
+    df = df.loc[mask]
 
-    df = (df[df['events'] == 'home_run']
-          .sort_values('Date')
-          .reset_index(drop=True))
-    if df.empty:
-        return df
+    df_hr = (df[df['events'] == 'home_run']
+             .copy()
+             .sort_values('Date')
+             .reset_index(drop=True))
 
-    df['HR No'] = df.index + 1
-    df['MM-DD'] = df['Date'].dt.strftime('%m-%d')
+    if df_hr.empty:
+        return df_hr
 
-    def pid2name(x):
+    df_hr['HR No'] = df_hr.index + 1
+    df_hr['MM-DD'] = df_hr['Date'].dt.strftime('%m-%d')
+
+    # pitcher ID -> name
+    def pid2name(p):
         try:
-            t = playerid_reverse_lookup([x], key_type='mlbam')
+            t = playerid_reverse_lookup([p], key_type='mlbam')
             return t['name_first'][0] + ' ' + t['name_last'][0]
         except Exception:
-            return str(x)
+            return str(p)
 
-    df['Pitcher'] = df['pitcher'].apply(
+    df_hr['Pitcher'] = df_hr['pitcher'].apply(
         lambda x: pid2name(x) if pd.notna(x) else '')
-    return df
+
+    return df_hr
 
 # ------------------------------------------------------------------
-# サイドバー
+# Sidebar UI
 # ------------------------------------------------------------------
 st.sidebar.header("Select Players and Date Range")
 
-team1 = st.sidebar.selectbox("First Player's Team", teams,
-                             index=teams.index("LAD") if "LAD" in teams else 0)
-team2 = st.sidebar.selectbox("Second Player's Team", teams,
-                             index=teams.index("NYY") if "NYY" in teams else 1)
+team1_abbr = st.sidebar.selectbox(
+    "First Player's Team", teams,
+    index=teams.index("LAD") if "LAD" in teams else 0)
+team2_abbr = st.sidebar.selectbox(
+    "Second Player's Team", teams,
+    index=teams.index("NYY") if "NYY" in teams else 1)
 
-team1_players = [n for n, _, t in star_players if t == team1]
-team2_players = [n for n, _, t in star_players if t == team2]
+team1_players = [n for n, _, t in star_players if t == team1_abbr]
+team2_players = [n for n, _, t in star_players if t == team2_abbr]
 
-def idx(lst, target): return lst.index(target) if target in lst else 0
+player1_name = st.sidebar.selectbox("First Player", team1_players)
+player2_name = st.sidebar.selectbox("Second Player", team2_players)
 
-p1_name = st.sidebar.selectbox("First Player", team1_players,
-                               index=idx(team1_players, "Shohei Ohtani"))
-p2_name = st.sidebar.selectbox("Second Player", team2_players,
-                               index=idx(team2_players, "Aaron Judge"))
+start_date = st.sidebar.date_input("Start date", REGULAR_START)
+today = date.today()
+end_date   = st.sidebar.date_input("End date", today)
 
-# 🔸 デフォルト開始日を 3/18 に変更
-start_date = st.sidebar.date_input("Start date", TOKYO_START)
-end_date   = st.sidebar.date_input("End date", datetime(2025, 6, 27))
+p1_id, team1_code = player_map[player1_name]
+p2_id, team2_code = player_map[player2_name]
 
-p1_id, team1_abbr = player_map[p1_name]
-p2_id, team2_abbr = player_map[p2_name]
-
-for name, abbr in [(p1_name, team1_abbr), (p2_name, team2_abbr)]:
-    if abbr not in {'LAD', 'CHC'} and \
-       datetime.combine(start_date, datetime.min.time()) < REGULAR_START:
+# Warning if querying before season start
+for name, code in [(player1_name, team1_code),
+                   (player2_name, team2_code)]:
+    if code not in {'LAD', 'CHC'} \
+       and datetime.combine(start_date, datetime.min.time()) < REGULAR_START:
         st.sidebar.warning(
-            f"No official MLB games for {name} ({abbr}) before 2025-03-27.")
+            f"No official MLB games for {name} ({code}) before 2025-03-27.")
 
 # ------------------------------------------------------------------
-# メイン表示
+# Display columns
 # ------------------------------------------------------------------
 col1, col2 = st.columns(2)
-logs, colors = {}, {p1_name: ROYAL_BLUE, p2_name: ORANGE}
+logs = {}
+color_map = {player1_name: ROYAL_BLUE, player2_name: ORANGE}
 
-for col, pid, name, abbr in [(col1, p1_id, p1_name, team1_abbr),
-                             (col2, p2_id, p2_name, team2_abbr)]:
+for col, pid, name, code in [
+    (col1, p1_id, player1_name, team1_code),
+    (col2, p2_id, player2_name, team2_code)
+]:
     with col:
         st.subheader(name)
-        st.image(player_img(pid), width=100)
-        df = fetch_hr(pid,
-                      datetime.combine(start_date, datetime.min.time()),
-                      end_date, abbr)
-        logs[name] = df
-        if df.empty:
+        st.image(get_player_image(pid), width=100)
+
+        df_hr = fetch_hr_log(
+            pid,
+            datetime.combine(start_date, datetime.min.time()),
+            end_date,
+            code
+        )
+        logs[name] = df_hr
+
+        if df_hr.empty:
             st.info("No HR data in selected period.")
             continue
-        st.dataframe(df[['HR No', 'MM-DD',
-                         'home_team', 'away_team', 'Pitcher']],
-                     use_container_width=True)
-        chart = (alt.Chart(df).mark_line(point=False,
-                                         color=colors[name])
+
+        st.dataframe(
+            df_hr[['HR No', 'MM-DD',
+                   'home_team', 'away_team', 'Pitcher']],
+            use_container_width=True)
+
+        chart = (alt.Chart(df_hr)
+                 .mark_line(point=False, color=color_map[name])
                  .encode(
-                     x=alt.X('Date:T', title='Date (MM-DD)',
+                     x=alt.X('Date:T',
+                             title='Date (MM-DD)',
                              axis=alt.Axis(format='%m-%d')),
-                     y=alt.Y('HR No:Q', title='Cumulative HRs',
-                             axis=alt.Axis(format='d'))) +
-                 alt.Chart(df).mark_point(size=60, filled=True,
-                                          color=colors[name])
+                     y=alt.Y('HR No:Q',
+                             title='Cumulative HRs',
+                             axis=alt.Axis(format='d'))
+                 ) +
+                 alt.Chart(df_hr)
+                 .mark_point(size=60, filled=True,
+                             color=color_map[name])
                  .encode(x='Date:T', y='HR No:Q'))
+
         st.altair_chart(chart.properties(title=f"{name} HR Pace"),
                         use_container_width=True)
 
 # ------------------------------------------------------------------
-# H2H
+# Head-to-Head comparison
 # ------------------------------------------------------------------
-if all(not logs[n].empty for n in [p1_name, p2_name]):
+if all(not logs[n].empty for n in [player1_name, player2_name]):
     st.subheader("Head-to-Head Comparison")
-    merged = pd.concat([logs[p1_name].assign(Player=p1_name),
-                        logs[p2_name].assign(Player=p2_name)])
-    compare = (alt.Chart(merged).mark_line(point=False)
-               .encode(
-                   x=alt.X('Date:T', title='Date (MM-DD)',
-                           axis=alt.Axis(format='%m-%d')),
-                   y=alt.Y('HR No:Q', title='Cumulative HRs',
-                           axis=alt.Axis(format='d')),
-                   color=alt.Color('Player:N',
-                                   scale=alt.Scale(
-                                       domain=[p1_name, p2_name],
-                                       range=[ROYAL_BLUE, ORANGE])),
-                   tooltip=['Player', 'Date', 'HR No', 'Pitcher']) +
-               alt.Chart(merged).mark_point(size=60, filled=True)
-               .encode(x='Date:T', y='HR No:Q', color='Player:N'))
-    st.altair_chart(compare, use_container_width=True)
 
-st.caption("Data: Statcast • Rosters: MLB-StatsAPI • Built with Streamlit")
+    merged = pd.concat([
+        logs[player1_name].assign(Player=player1_name),
+        logs[player2_name].assign(Player=player2_name)
+    ])
+
+    comparison = (
+        alt.Chart(merged)
+        .mark_line(point=False)
+        .encode(
+            x=alt.X('Date:T',
+                    title='Date (MM-DD)',
+                    axis=alt.Axis(format='%m-%d')),
+            y=alt.Y('HR No:Q',
+                    title='Cumulative HRs',
+                    axis=alt.Axis(format='d')),
+            color=alt.Color('Player:N',
+                            scale=alt.Scale(
+                                domain=[player1_name, player2_name],
+                                range=[ROYAL_BLUE, ORANGE])),
+            tooltip=['Player', 'Date', 'HR No', 'Pitcher']
+        )
+        + alt.Chart(merged)
+        .mark_point(size=60, filled=True)
+        .encode(
+            x='Date:T',
+            y='HR No:Q',
+            color='Player:N'
+        )
+    )
+    st.altair_chart(comparison,
+                    use_container_width=True)
+
+st.caption("Data: Statcast (pybaseball) • Rosters: MLB-StatsAPI • Built with Streamlit")
